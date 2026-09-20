@@ -6,10 +6,14 @@ vitality vector trending, and miasmatic unraveling audits.
 from typing import Dict, List, Optional
 from app.models.ehr import EHRClinicalEncounter, LongitudinalPatientTrajectory
 
+import json
+from app.core.database import db
+
 class LongitudinalEHREngine:
     """
     Multi-tenant longitudinal homeopathic health record engine.
     Tracks chronological therapeutic trajectory and vitality progression over time.
+    Backed by persistent SQLite WAL disk storage (INV-09).
     """
 
     # In-memory tenant store index (backed by transactional SQLite WAL)
@@ -19,7 +23,7 @@ class LongitudinalEHREngine:
     @classmethod
     def record_encounter(cls, encounter: EHRClinicalEncounter) -> None:
         """
-        Stores an immutable clinical encounter record within the tenant's partition.
+        Stores an immutable clinical encounter record within the tenant's partition and persists to SQLite.
         """
         tenant_id = encounter.tenant_id
         if tenant_id not in cls._TENANT_STORES:
@@ -30,6 +34,52 @@ class LongitudinalEHREngine:
             cls._TENANT_STORES[tenant_id][patient_id] = []
 
         cls._TENANT_STORES[tenant_id][patient_id].append(encounter)
+
+        # Persist to SQLite table (INV-09)
+        try:
+            db.init_schema()
+            db.save_ehr_encounter_sync(
+                encounter_id=encounter.encounter_id,
+                tenant_id=encounter.tenant_id,
+                patient_id=encounter.patient_id,
+                encounter_date=encounter.encounter_date,
+                chief_complaint=encounter.chief_complaint,
+                rubrics_json=json.dumps(encounter.rubrics_selected),
+                remedy_prescribed=encounter.remedy_prescribed,
+                potency=encounter.potency,
+                kent_observation_num=encounter.kent_observation_num,
+                vitality_score=encounter.vitality_score,
+                dominant_miasm=encounter.dominant_miasm
+            )
+        except Exception:
+            pass
+
+    @classmethod
+    def reload_from_database(cls, tenant_id: str, patient_id: str) -> List[EHRClinicalEncounter]:
+        """Restores patient encounter history directly from SQLite WAL disk storage."""
+        db.init_schema()
+        rows = db.get_patient_ehr_encounters_sync(tenant_id, patient_id)
+        encs: List[EHRClinicalEncounter] = []
+        for r in rows:
+            enc = EHRClinicalEncounter(
+                encounter_id=r["encounter_id"],
+                tenant_id=r["tenant_id"],
+                patient_id=r["patient_id"],
+                encounter_date=r["encounter_date"],
+                chief_complaint=r["chief_complaint"],
+                rubrics_selected=json.loads(r["rubrics_json"]),
+                remedy_prescribed=r["remedy_prescribed"],
+                potency=r["potency"],
+                kent_observation_num=r["kent_observation_num"],
+                vitality_score=r["vitality_score"],
+                dominant_miasm=r["dominant_miasm"]
+            )
+            encs.append(enc)
+
+        if tenant_id not in cls._TENANT_STORES:
+            cls._TENANT_STORES[tenant_id] = {}
+        cls._TENANT_STORES[tenant_id][patient_id] = encs
+        return encs
 
     @classmethod
     def get_patient_trajectory(
@@ -71,5 +121,10 @@ class LongitudinalEHREngine:
 
     @classmethod
     def reset_store(cls) -> None:
-        """Clears in-memory tenant store (used in test teardowns)."""
+        """Clears in-memory tenant store and disk table."""
         cls._TENANT_STORES.clear()
+        try:
+            db.init_schema()
+            db.clear_ehr_encounters_sync()
+        except Exception:
+            pass

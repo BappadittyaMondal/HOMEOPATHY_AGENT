@@ -25,8 +25,9 @@ class MentalHealthEngine:
                 indicated_remedy="Aurum metallicum",
                 recommended_potency="1M",
                 clinical_guidance=(
-                    "Severe psychotic depression, religious melancholy, utter despair. "
-                    "Feels unpardonable guilt and desires death. Relieved by listening to sacred music."
+                    "EMERGENCY PSYCHIATRIC RED FLAG: Severe psychotic depression, religious melancholy, utter despair. "
+                    "Feels unpardonable guilt and desires death. Ambulatory dispensing locked; requires immediate "
+                    "24/7 psychiatric emergency crisis evaluation per Mental Healthcare Act 2017."
                 )
             )
 

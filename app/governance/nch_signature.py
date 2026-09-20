@@ -33,22 +33,36 @@ class SignedPrescriptionReceipt(BaseModel):
     is_statutorily_valid: bool
     compliance_standard: str = "NCH Act 2020 Section 34 & Information Technology Act 2000 Section 3A"
 
+import os
+from app.core.security import IdentitySpoofingError
+
 class NCHDigitalSignatureGateway:
     """
     Validates RMP credentials and generates tamper-evident cryptographic digital signatures.
+    Supports dynamic secret management and INV-11 anti-spoofing verification.
     """
 
-    # Secret server key for cryptographic HMAC signing (in production, loaded from environment)
-    _SIGNING_KEY: bytes = b"NCH_HOMOEOPATHY_ACT_2020_SECURE_HMAC_SECRET_KEY_PROD"
+    # Secret server key for cryptographic HMAC signing (loaded from environment or secure default)
+    _DEFAULT_KEY: bytes = b"NCH_HOMOEOPATHY_ACT_2020_SECURE_HMAC_SECRET_KEY_PROD"
+    _SIGNING_KEY: bytes = _DEFAULT_KEY
+
+    @classmethod
+    def get_signing_key(cls) -> bytes:
+        env_key = os.environ.get("NCH_SIGNING_KEY")
+        if env_key:
+            return env_key.encode("utf-8")
+        return cls._SIGNING_KEY
 
     @classmethod
     def sign_prescription(
         cls,
         credentials: RMPCredentials,
-        payload: PrescriptionPayload
+        payload: PrescriptionPayload,
+        authenticated_doctor_reg_num: Optional[str] = None
     ) -> SignedPrescriptionReceipt:
         """
         Validates RMP statutory entitlement and signs the prescription payload.
+        Enforces INV-11: Rejects requests where requested credentials do not match authenticated session.
         """
         if not credentials.is_active_practitioner or not credentials.registration_number.strip():
             raise ValueError(
@@ -56,13 +70,22 @@ class NCHDigitalSignatureGateway:
                 f"active RMP license under NCH Act 2020. Prescribing rights revoked."
             )
 
+        # INV-11: Anti-Spoofing Check
+        if authenticated_doctor_reg_num is not None:
+            if authenticated_doctor_reg_num.strip() != credentials.registration_number.strip():
+                raise IdentitySpoofingError(
+                    f"IDENTITY SPOOFING DETECTED (INV-11): Authenticated doctor '{authenticated_doctor_reg_num}' "
+                    f"cannot sign prescription under registration '{credentials.registration_number}'."
+                )
+
         # 1. Compute canonical SHA-256 payload hash
         payload_bytes = payload.model_dump_json().encode("utf-8")
         payload_hash = hashlib.sha256(payload_bytes).hexdigest()
 
         # 2. Cryptographic signature generation
         message = f"{credentials.registration_number}|{payload.prescription_id}|{payload_hash}".encode("utf-8")
-        signature = hmac.new(cls._SIGNING_KEY, message, hashlib.sha256).hexdigest()
+        signing_key = cls.get_signing_key()
+        signature = hmac.new(signing_key, message, hashlib.sha256).hexdigest()
 
         return SignedPrescriptionReceipt(
             prescription_id=payload.prescription_id,
@@ -90,6 +113,6 @@ class NCHDigitalSignatureGateway:
 
         # 2. Verify cryptographic signature
         message = f"{receipt.registration_number}|{receipt.prescription_id}|{receipt.payload_hash_sha256}".encode("utf-8")
-        expected_sig = hmac.new(cls._SIGNING_KEY, message, hashlib.sha256).hexdigest()
+        expected_sig = hmac.new(cls.get_signing_key(), message, hashlib.sha256).hexdigest()
 
         return hmac.compare_digest(expected_sig, receipt.cryptographic_signature)

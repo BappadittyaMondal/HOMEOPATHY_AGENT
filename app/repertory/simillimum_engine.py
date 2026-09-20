@@ -11,10 +11,13 @@ from app.models.simillimum import (
 )
 from app.repertory.csr_kernel import csr_kernel
 
+from app.models.repertory_boundary import CaseTotalityInput, AbstainException
+
 class SimillimumRankingEngine:
     """
     Master Simillimum Ranking Engine.
     Executes balanced CRR matrix calculation and evaluates mental rubric coverage.
+    Guarantees anti-wraparound validation and explicit ABSTAIN state for insufficient totalities.
     """
 
     @classmethod
@@ -26,22 +29,41 @@ class SimillimumRankingEngine:
         weights: List[float],
         is_mental_flags: List[bool],
         polarity_penalties: Optional[Dict[str, float]] = None,
-        top_k: int = 15
+        top_k: int = 15,
+        min_required_rubrics: int = 3
     ) -> SimillimumEvaluationReport:
         """
         Calculates ranked differentials with mental coverage and polarity penalties.
+        Enforces INV-03 (ABSTAIN if < 3 rubrics) and INV-04 (Anti-wraparound).
         """
-        t0 = time.perf_counter()
-        
-        if not rubric_indices:
+        # Step 0: Enforce anti-wraparound & boundary validation (INV-04)
+        max_idx = len(csr_kernel.rubrics_list) if (csr_kernel.is_loaded and len(csr_kernel.rubrics_list) > 0) else None
+        totality_input = CaseTotalityInput(
+            patient_id=patient_id,
+            encounter_id=encounter_id,
+            rubric_indices=rubric_indices,
+            symptom_weights=weights,
+            is_mental_flags=is_mental_flags,
+            max_allowed_index=max_idx
+        )
+
+        # Step 1: Enforce Case Totality Threshold (INV-03: ABSTAIN if < 3 rubrics)
+        if not totality_input.is_sufficient_totality(min_rubrics=min_required_rubrics):
             return SimillimumEvaluationReport(
                 encounter_id=encounter_id,
                 patient_id=patient_id,
-                primary_simillimum="None (No rubrics provided)",
+                primary_simillimum=None,
                 top_candidates=[],
                 total_evaluated=0,
-                execution_latency_ms=0.0
+                execution_latency_ms=0.0,
+                status="ABSTAIN",
+                abstention_reason=(
+                    f"INSUFFICIENT_SYMPTOM_TOTALITY: Case has {len(rubric_indices)} rubrics; "
+                    f"minimum {min_required_rubrics} characteristic rubrics required per Organon Aphorism 153."
+                )
             )
+
+        t0 = time.perf_counter()
 
         # 1. Query base scores from high-performance CSR sparse matrix kernel
         base_results = csr_kernel.query_simillimum(

@@ -27,7 +27,9 @@ class RankedRemedyCandidate(BaseModel):
 class SimillimumEvaluationReport(BaseModel):
     encounter_id: str
     patient_id: str
-    primary_simillimum: str
-    top_candidates: List[RankedRemedyCandidate]
-    total_evaluated: int
-    execution_latency_ms: float
+    primary_simillimum: Optional[str] = None
+    top_candidates: List[RankedRemedyCandidate] = Field(default_factory=list)
+    total_evaluated: int = 0
+    execution_latency_ms: float = 0.0
+    status: str = "COMPLETED"  # "COMPLETED" or "ABSTAIN"
+    abstention_reason: Optional[str] = None

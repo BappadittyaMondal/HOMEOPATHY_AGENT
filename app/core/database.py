@@ -274,16 +274,149 @@ class SQLiteWALDatabase:
                     signature_hash TEXT NOT NULL
                 );
 
+                -- 7. Persistent NABH Audit Chain (Phase 55)
+                CREATE TABLE IF NOT EXISTS nabh_audit_chain (
+                    log_id TEXT PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    patient_id TEXT,
+                    details_json TEXT NOT NULL,
+                    previous_hash TEXT NOT NULL,
+                    current_hash TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- 8. Persistent Dispensary Stock Ledger (Phase 55)
+                CREATE TABLE IF NOT EXISTS dispensary_stock_ledger (
+                    bottle_id TEXT PRIMARY KEY,
+                    remedy_name TEXT NOT NULL,
+                    potency TEXT NOT NULL,
+                    batch_number TEXT NOT NULL,
+                    initial_volume_ml REAL NOT NULL,
+                    current_volume_ml REAL NOT NULL,
+                    reorder_threshold_ml REAL DEFAULT 15.0,
+                    evaporation_tolerance_pct REAL DEFAULT 10.0,
+                    status TEXT DEFAULT 'ACTIVE_BENCH',
+                    is_quarantined INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- 9. Persistent EHR Encounters (Phase 55)
+                CREATE TABLE IF NOT EXISTS ehr_clinical_encounters (
+                    encounter_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    patient_id TEXT NOT NULL,
+                    encounter_date TEXT NOT NULL,
+                    chief_complaint TEXT NOT NULL,
+                    rubrics_json TEXT NOT NULL,
+                    remedy_prescribed TEXT NOT NULL,
+                    potency TEXT NOT NULL,
+                    kent_observation_num INTEGER,
+                    vitality_score REAL NOT NULL,
+                    dominant_miasm TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 -- Indexes for sub-millisecond retrieval
                 CREATE INDEX IF NOT EXISTS idx_patients_phone ON patients(contact_phone);
                 CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(patient_id);
                 CREATE INDEX IF NOT EXISTS idx_encounters_status ON encounters(status);
                 CREATE INDEX IF NOT EXISTS idx_prescriptions_patient ON prescriptions(patient_id);
                 CREATE INDEX IF NOT EXISTS idx_rubrics_path ON rubrics(full_path);
+                CREATE INDEX IF NOT EXISTS idx_nabh_patient ON nabh_audit_chain(patient_id);
+                CREATE INDEX IF NOT EXISTS idx_ehr_tenant_patient ON ehr_clinical_encounters(tenant_id, patient_id);
                 """)
         finally:
             conn.close()
         logger.info("Database schema initialized with foreign keys and WAL indexes.")
+
+    def save_nabh_audit_entry_sync(self, log_id: str, timestamp: str, actor_id: str, action_type: str, details_json: str, previous_hash: str, current_hash: str, patient_id: Optional[str] = None):
+        conn = self.get_sync_write_connection()
+        try:
+            with conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO nabh_audit_chain
+                    (log_id, timestamp, actor_id, action_type, patient_id, details_json, previous_hash, current_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (log_id, timestamp, actor_id, action_type, patient_id, details_json, previous_hash, current_hash))
+        finally:
+            conn.close()
+
+    def get_all_nabh_audit_entries_sync(self) -> list[dict]:
+        conn = self.get_read_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM nabh_audit_chain ORDER BY rowid ASC")
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def clear_nabh_audit_entries_sync(self):
+        conn = self.get_sync_write_connection()
+        try:
+            with conn:
+                conn.execute("DELETE FROM nabh_audit_chain")
+        finally:
+            conn.close()
+
+    def save_stock_bottle_sync(self, bottle_id: str, remedy_name: str, potency: str, batch_number: str, initial_volume_ml: float, current_volume_ml: float, reorder_threshold_ml: float, evaporation_tolerance_pct: float, status: str, is_quarantined: bool):
+        conn = self.get_sync_write_connection()
+        try:
+            with conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO dispensary_stock_ledger
+                    (bottle_id, remedy_name, potency, batch_number, initial_volume_ml, current_volume_ml, reorder_threshold_ml, evaporation_tolerance_pct, status, is_quarantined)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (bottle_id, remedy_name, potency, batch_number, initial_volume_ml, current_volume_ml, reorder_threshold_ml, evaporation_tolerance_pct, status, 1 if is_quarantined else 0))
+        finally:
+            conn.close()
+
+    def get_all_stock_bottles_sync(self) -> list[dict]:
+        conn = self.get_read_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM dispensary_stock_ledger")
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def clear_stock_bottles_sync(self):
+        conn = self.get_sync_write_connection()
+        try:
+            with conn:
+                conn.execute("DELETE FROM dispensary_stock_ledger")
+        finally:
+            conn.close()
+
+    def save_ehr_encounter_sync(self, encounter_id: str, tenant_id: str, patient_id: str, encounter_date: str, chief_complaint: str, rubrics_json: str, remedy_prescribed: str, potency: str, kent_observation_num: Optional[int], vitality_score: float, dominant_miasm: str):
+        conn = self.get_sync_write_connection()
+        try:
+            with conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO ehr_clinical_encounters
+                    (encounter_id, tenant_id, patient_id, encounter_date, chief_complaint, rubrics_json, remedy_prescribed, potency, kent_observation_num, vitality_score, dominant_miasm)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (encounter_id, tenant_id, patient_id, encounter_date, chief_complaint, rubrics_json, remedy_prescribed, potency, kent_observation_num, vitality_score, dominant_miasm))
+        finally:
+            conn.close()
+
+    def get_patient_ehr_encounters_sync(self, tenant_id: str, patient_id: str) -> list[dict]:
+        conn = self.get_read_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM ehr_clinical_encounters WHERE tenant_id = ? AND patient_id = ? ORDER BY encounter_date ASC", (tenant_id, patient_id))
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def clear_ehr_encounters_sync(self):
+        conn = self.get_sync_write_connection()
+        try:
+            with conn:
+                conn.execute("DELETE FROM ehr_clinical_encounters")
+        finally:
+            conn.close()
 
 # Global database singleton
 db = SQLiteWALDatabase()
