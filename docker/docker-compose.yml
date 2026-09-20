@@ -1,0 +1,52 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: homeopathy_agent:v3.0.0
+    container_name: homeopathy_agent_app
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1536M
+        reservations:
+          memory: 512M
+    environment:
+      - ENVIRONMENT=production
+      - DATA_DIR=/data
+      - DB_NAME=homeopathy_agent.db
+    volumes:
+      - sqlite_wal_data:/data
+    networks:
+      - hhis_internal
+    expose:
+      - "8000"
+
+  nginx:
+    image: nginx:alpine
+    container_name: homeopathy_agent_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - certbot_certs:/etc/letsencrypt:ro
+    depends_on:
+      - app
+    networks:
+      - hhis_internal
+
+volumes:
+  sqlite_wal_data:
+    driver: local
+  certbot_certs:
+    driver: local
+
+networks:
+  hhis_internal:
+    driver: bridge
