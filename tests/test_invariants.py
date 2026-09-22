@@ -61,7 +61,8 @@ from app.clinical.lab_gateway import (
 from app.clinical.cpde import (
     ClinicalPathologyDiagnosticEngine,
     ClinicalPresentationInput,
-    SurgicalInterventionRequiredException
+    SurgicalInterventionRequiredException,
+    OncologicalBiopsyRequiredException
 )
 from app.repertory.canonical_registry import (
     CanonicalRemedyRegistry,
@@ -416,6 +417,24 @@ def test_inv_16_canonical_nomenclature_resolution():
     with pytest.raises(UnresolvedRemedyException) as exc_info:
         CanonicalRemedyRegistry.resolve_remedy("FakeRemedy12345")
     assert "UNRESOLVED REMEDY" in str(exc_info.value)
+
+
+# -----------------------------------------------------------------------------
+# INV-17: Oncological Pre-Malignancy Surveillance & Biopsy Gate
+# -----------------------------------------------------------------------------
+def test_inv_17_oncological_pre_malignancy_biopsy_lockout():
+    """INV-17: Chronic keratosis with induration or Bowenoid transformation mandates biopsy lockout."""
+    presentation = ClinicalPresentationInput(
+        patient_id="PT-INV17-001",
+        patient_age_years=49,
+        chief_complaint="Thickened palms and soles for 18 years",
+        duration_days=6570,
+        physical_signs=["indurated keratosis on left palm", "rough dark spots"]
+    )
+    with pytest.raises(OncologicalBiopsyRequiredException) as exc_info:
+        ClinicalPathologyDiagnosticEngine.evaluate_presentation(presentation)
+    assert "INV-17" in str(exc_info.value)
+    assert "Dermatopathology Punch Biopsy" in exc_info.value.recommended_investigation
 
 
 # -----------------------------------------------------------------------------

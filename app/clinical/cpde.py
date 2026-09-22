@@ -12,6 +12,7 @@ class ClinicalDomainCategory(str, Enum):
     MEDICAL_OUTPATIENT_HOMOEOPATHY = "MEDICAL_OUTPATIENT_HOMOEOPATHY"
     INTEGRATED_CO_MANAGEMENT = "INTEGRATED_CO_MANAGEMENT"
     ACUTE_SURGICAL_INTERVENTION = "ACUTE_SURGICAL_INTERVENTION"
+    ONCOLOGICAL_BIOPSY_MANDATED = "ONCOLOGICAL_BIOPSY_MANDATED"
 
 
 class SurgicalInterventionRequiredException(Exception):
@@ -21,6 +22,15 @@ class SurgicalInterventionRequiredException(Exception):
         self.message = message
         self.suspected_surgical_condition = suspected_surgical_condition
         self.recommended_surgical_specialty = recommended_surgical_specialty
+
+
+class OncologicalBiopsyRequiredException(Exception):
+    """Raised when pre-malignant or suspected neoplastic transformation is detected (INV-17)."""
+    def __init__(self, message: str, suspected_lesion: str, recommended_investigation: str = "Dermatopathology Punch Biopsy"):
+        super().__init__(message)
+        self.message = message
+        self.suspected_lesion = suspected_lesion
+        self.recommended_investigation = recommended_investigation
 
 
 class ClinicalPresentationInput(BaseModel):
@@ -41,6 +51,7 @@ class DiagnosticReport(BaseModel):
     is_homeopathy_permitted_as_monotherapy: bool
     requires_integrated_allopathic_co_management: bool
     surgical_referral_mandated: bool
+    biopsy_mandated: bool = False
     clinical_rationale: str
     aphorism_reference: str
 
@@ -79,6 +90,34 @@ class ClinicalPathologyDiagnosticEngine:
         }
     }
 
+    # Pre-Malignant / Suspected Neoplastic Transformations per INV-17
+    PRE_MALIGNANT_CONDITIONS: Dict[str, Dict[str, str]] = {
+        "arsenical_keratosis_malignant_risk": {
+            "triggers": ["indurated keratosis", "ulcerated keratosis", "bleeding palm", "bleeding sole", "fissured keratosis with induration"],
+            "icd10": "L85.8",
+            "condition": "Chronic Arsenical Keratoderma with Suspected Bowenoid / Neoplastic Transformation",
+            "investigation": "Urgent Dermatopathology Punch Biopsy"
+        },
+        "bowen_disease": {
+            "triggers": ["bowen", "squamous cell carcinoma in situ", "erythroplasia of queyrat"],
+            "icd10": "D04.9",
+            "condition": "Cutaneous Squamous Cell Carcinoma in situ (Bowen's Disease)",
+            "investigation": "Full-Thickness Punch Biopsy & Wide Local Excision Assessment"
+        },
+        "marjolin_ulcer": {
+            "triggers": ["marjolin", "non-healing chronic ulcer with everted edges", "indurated ulcer edge", "malignant ulcer"],
+            "icd10": "C44.92",
+            "condition": "Suspected Invasive Cutaneous Carcinoma / Marjolin's Ulcer",
+            "investigation": "Edge Wedge Biopsy & Regional Lymph Node Assessment"
+        },
+        "oral_premalignancy": {
+            "triggers": ["speckled leukoplakia", "erythroplakia with induration", "ulcerated leukoplakia", "oral submucous fibrosis with ulcer"],
+            "icd10": "K13.21",
+            "condition": "High-Risk Oral Dysplasia / Suspicious Malignant Transformation",
+            "investigation": "Incisional Biopsy of Oral Mucosa"
+        }
+    }
+
     # Integrated Co-Management (Requires Allopathic Pharmacotherapy alongside Homeopathy)
     INTEGRATED_CONDITIONS: Dict[str, Dict[str, str]] = {
         "type_1_diabetes": {
@@ -102,11 +141,12 @@ class ClinicalPathologyDiagnosticEngine:
     def evaluate_presentation(
         cls,
         presentation: ClinicalPresentationInput,
-        raise_on_surgical: bool = True
+        raise_on_surgical: bool = True,
+        raise_on_oncological: bool = True
     ) -> DiagnosticReport:
         """
-        Evaluates clinical findings to establish nosological diagnosis and surgical/medical boundaries.
-        Enforces INV-15: Acute surgical conditions block outpatient medical repertorization.
+        Evaluates clinical findings to establish nosological diagnosis, surgical boundaries (INV-15),
+        and oncological pre-malignancy surveillance gates (INV-17).
         """
         combined_text = (
             f"{presentation.chief_complaint} {' '.join(presentation.physical_signs)} "
@@ -135,9 +175,65 @@ class ClinicalPathologyDiagnosticEngine:
                     is_homeopathy_permitted_as_monotherapy=False,
                     requires_integrated_allopathic_co_management=True,
                     surgical_referral_mandated=True,
+                    biopsy_mandated=False,
                     clinical_rationale=msg,
                     aphorism_reference="Organon Aphorism 186: Dynamic medicine cannot substitute for operative mechanical intervention."
                 )
+
+        # 2. Evaluate Oncological Pre-Malignancy & Neoplastic Transformation Gate (INV-17)
+        for cond_key, info in cls.PRE_MALIGNANT_CONDITIONS.items():
+            if any(t in combined_text for t in info["triggers"]):
+                msg = (
+                    f"ONCOLOGICAL PRE-MALIGNANCY BOUNDARY (INV-17): Patient presentation exhibits features of "
+                    f"suspected neoplastic or pre-malignant transformation ('{info['condition']}'). "
+                    f"Standalone outpatient homeopathic prescribing is HALTED. Mandatory investigation: "
+                    f"{info['investigation']} to rule out invasive malignancy."
+                )
+                if raise_on_oncological:
+                    raise OncologicalBiopsyRequiredException(
+                        message=msg,
+                        suspected_lesion=info["condition"],
+                        recommended_investigation=info["investigation"]
+                    )
+                return DiagnosticReport(
+                    patient_id=presentation.patient_id,
+                    primary_icd10_diagnosis=info["condition"],
+                    icd10_code=info["icd10"],
+                    category=ClinicalDomainCategory.ONCOLOGICAL_BIOPSY_MANDATED,
+                    is_homeopathy_permitted_as_monotherapy=False,
+                    requires_integrated_allopathic_co_management=True,
+                    surgical_referral_mandated=False,
+                    biopsy_mandated=True,
+                    clinical_rationale=msg,
+                    aphorism_reference="Organon Aphorism 186 & Modern Oncological Safety: Local structural neoplasia requires histopathological diagnosis before dynamic treatment."
+                )
+
+        # Multi-decade chronic keratosis heuristic with induration / ulceration (>10 years)
+        if presentation.duration_days >= 3650 and any(w in combined_text for w in ["indurat", "ulcer", "bleed", "stony"]) and any(w in combined_text for w in ["kerato", "palm", "sole", "lesion", "foot", "feet"]):
+            cond_desc = "Chronic Palmoplantar Keratopathy (>10y) with Induration/Ulceration (High-Risk Bowenoid Degeneration)"
+            msg = (
+                f"ONCOLOGICAL PRE-MALIGNANCY BOUNDARY (INV-17): Multi-decade chronic keratosis ({presentation.duration_days // 365} years) "
+                f"with secondary ulceration/induration carries significant risk of Squamous Cell Carcinoma in situ. "
+                f"Standalone homeopathic prescribing is HALTED pending histopathological clearance."
+            )
+            if raise_on_oncological:
+                raise OncologicalBiopsyRequiredException(
+                    message=msg,
+                    suspected_lesion=cond_desc,
+                    recommended_investigation="Dermatopathology Punch Biopsy"
+                )
+            return DiagnosticReport(
+                patient_id=presentation.patient_id,
+                primary_icd10_diagnosis=cond_desc,
+                icd10_code="L85.8",
+                category=ClinicalDomainCategory.ONCOLOGICAL_BIOPSY_MANDATED,
+                is_homeopathy_permitted_as_monotherapy=False,
+                requires_integrated_allopathic_co_management=True,
+                surgical_referral_mandated=False,
+                biopsy_mandated=True,
+                clinical_rationale=msg,
+                aphorism_reference="Organon Aphorism 186 & Oncological Biopsy Mandate (INV-17)."
+            )
 
         # 2. Evaluate Integrated Co-Management
         for cond_key, info in cls.INTEGRATED_CONDITIONS.items():

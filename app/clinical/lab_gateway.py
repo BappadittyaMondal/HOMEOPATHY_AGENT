@@ -84,6 +84,43 @@ class LaboratoryPanicGateway:
             "high": 12.0,
             "unit": "mg/dL",
             "hazard": "Fulminant hepatic failure / kernicterus risk"
+        },
+        # Heavy Metal & Environmental Trace Element Toxicology (INV-14 Extended)
+        "urine_arsenic": {
+            "low": None,
+            "high": 50.0,
+            "unit": "ug/L",
+            "hazard": "Active chronic / acute arsenic toxicity with multiorgan collapse risk"
+        },
+        "hair_arsenic": {
+            "low": None,
+            "high": 1.0,
+            "unit": "ug/g",
+            "hazard": "Severe chronic tissue arsenic bioaccumulation and premalignant keratopathy"
+        },
+        "nail_arsenic": {
+            "low": None,
+            "high": 1.0,
+            "unit": "ug/g",
+            "hazard": "Deep chronobiological heavy metal sequestration and vascular endothelial injury"
+        },
+        "blood_lead": {
+            "low": None,
+            "high": 5.0,
+            "unit": "ug/dL",
+            "hazard": "Plumbism / lead neurotoxicity, motor neuropathy, and encephalopathy"
+        },
+        "blood_mercury": {
+            "low": None,
+            "high": 10.0,
+            "unit": "ug/L",
+            "hazard": "Hydrargyrism / toxic mercury encephalopathy and tubular nephropathy"
+        },
+        "serum_fluoride": {
+            "low": None,
+            "high": 0.2,
+            "unit": "mg/L",
+            "hazard": "Fluorosis / toxic fluoride osseous and ligamentous calcification"
         }
     }
 
