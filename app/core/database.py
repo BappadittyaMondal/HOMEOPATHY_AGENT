@@ -418,5 +418,29 @@ class SQLiteWALDatabase:
         finally:
             conn.close()
 
+    def wal_checkpoint(self, mode: str = "TRUNCATE") -> dict:
+        """
+        Executes explicit WAL checkpoint to truncate wal log file and optimize disk I/O.
+        Modes: PASSIVE, FULL, RESTART, TRUNCATE.
+        """
+        conn = self.get_sync_write_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"PRAGMA wal_checkpoint({mode});")
+            row = cursor.fetchone()
+            busy, log_pages, checkpointed_pages = (row[0], row[1], row[2]) if row else (0, 0, 0)
+            logger.info(f"SQLite WAL checkpoint({mode}) completed: busy={busy}, log={log_pages}, checkpointed={checkpointed_pages}")
+            return {
+                "checkpoint_mode": mode,
+                "is_busy": bool(busy),
+                "log_pages": log_pages,
+                "checkpointed_pages": checkpointed_pages,
+            }
+        except Exception as exc:
+            logger.error(f"WAL checkpoint failed: {exc}")
+            return {"error": str(exc)}
+        finally:
+            conn.close()
+
 # Global database singleton
 db = SQLiteWALDatabase()

@@ -95,7 +95,18 @@ from app.safety.obstetric_firewall import (
 from app.clinical.cpde import (
     ClinicalPathologyDiagnosticEngine,
     ClinicalPresentationInput,
-    SurgicalInterventionRequiredException
+    SurgicalInterventionRequiredException,
+    OncologicalBiopsyRequiredException
+)
+from app.clinical.transfer_dossier import (
+    EmergencyTransferDossier,
+    TransferDossierGenerator
+)
+from app.clinical.acute_intercurrent import (
+    AcuteIntercurrentEngine,
+    RubricCategory,
+    RubricItem,
+    AcuteChronicContaminationException
 )
 from app.clinical.lab_gateway import (
     LaboratoryPanicGateway,
@@ -130,6 +141,8 @@ class MasterHardenedClinicalResult(BaseModel):
     dispense_receipt: Optional[Dict[str, Any]] = None
     ehr_encounter: Optional[EHRClinicalEncounter] = None
     nabh_audit_entry: Optional[NABHAuditEntry] = None
+    transfer_dossier: Optional[EmergencyTransferDossier] = None
+    acute_case_id: Optional[str] = None
     invariants_verified: List[str] = Field(default_factory=list)
     execution_timestamp: str
 
@@ -593,10 +606,13 @@ class MasterClinicalPipeline:
         physical_bottle_remedy: Optional[str] = None,
         physical_bottle_potency: Optional[str] = None,
         is_acute: bool = False,
-        has_psychiatrist_cosign: bool = False
+        has_psychiatrist_cosign: bool = False,
+        acute_rubrics: Optional[List[RubricItem]] = None,
+        is_acute_intercurrent: bool = False,
+        acute_engine: Optional[AcuteIntercurrentEngine] = None
     ) -> MasterHardenedClinicalResult:
         """
-        Executes zero-defect hardened clinical workflow enforcing all 16 Negative Operational Invariants (INV-01 to INV-16).
+        Executes zero-defect hardened clinical workflow enforcing all 18 Negative Operational Invariants (INV-01 to INV-18).
         """
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         invariants_verified: List[str] = []
@@ -624,26 +640,55 @@ class MasterClinicalPipeline:
                         "qsofa": str(emergency_packet.qsofa_score)
                     }
                 )
+                dossier = TransferDossierGenerator.from_break_glass_packet(
+                    packet_dict=emergency_packet.model_dump(),
+                    patient_id=patient_id,
+                    age=patient_age_years
+                )
                 return MasterHardenedClinicalResult(
                     patient_id=patient_id,
                     tenant_id=tenant_id,
                     is_workflow_successful=False,
                     is_emergency_lockout=True,
+                    transfer_dossier=dossier,
                     nabh_audit_entry=audit_log,
                     invariants_verified=["INV-05 / INV-06: Emergency Break-Glass Fail-Closed Lockout Triggered"],
                     execution_timestamp=now_iso
                 )
         invariants_verified.append("INV-05 / INV-06: Emergency Triage / NEWS2 / Psychiatric Cleared")
 
+        # 3. INV-18: Acute-on-Chronic Case Segregation Verification
+        active_acute_id = None
+        if acute_rubrics is not None:
+            engine = acute_engine or AcuteIntercurrentEngine()
+            if not is_acute_intercurrent:
+                # Passing rubrics into chronic case totality
+                engine.validate_rubric_purity(RubricCategory.CHRONIC_CONSTITUTIONAL, acute_rubrics)
+            else:
+                # Opening or validating acute intercurrent totality
+                engine.validate_rubric_purity(RubricCategory.ACUTE_INTERCURRENT, acute_rubrics)
+                acute_rec, _ = engine.open_acute_intercurrent(
+                    patient_id=patient_id,
+                    presenting_complaint=clinical_diagnosis,
+                    acute_rubrics=acute_rubrics
+                )
+                active_acute_id = acute_rec.acute_id
+            invariants_verified.append("INV-18: Acute-on-Chronic Case Segregation Cleared")
+
         # 4. INV-14: Critical Laboratory Panic Gateway
         if lab_panel:
             LaboratoryPanicGateway.evaluate_lab_panel(lab_panel, raise_on_panic=True)
             invariants_verified.append("INV-14: Lab Panic Gateway Cleared")
 
-        # 5. INV-15: Aphorism 186 Surgical Pathology Boundary
+        # 5. INV-15 & INV-17: Aphorism 186 Surgical Pathology Boundary & Oncological Surveillance
         if clinical_presentation:
-            ClinicalPathologyDiagnosticEngine.evaluate_presentation(clinical_presentation, raise_on_surgical=True)
+            ClinicalPathologyDiagnosticEngine.evaluate_presentation(
+                clinical_presentation,
+                raise_on_surgical=True,
+                raise_on_oncological=True
+            )
             invariants_verified.append("INV-15: Aphorism 186 Operative Boundary Cleared")
+            invariants_verified.append("INV-17: Oncological Pre-Malignancy Surveillance Cleared")
 
         # 6. INV-03 & INV-04: Boundary Validation & Case Totality ABSTAIN Engine
         rubrics = rubric_indices or []
@@ -814,6 +859,7 @@ class MasterClinicalPipeline:
             dispense_receipt=dispense_receipt,
             ehr_encounter=encounter,
             nabh_audit_entry=audit_entry,
+            acute_case_id=active_acute_id,
             invariants_verified=invariants_verified,
             execution_timestamp=now_iso
         )

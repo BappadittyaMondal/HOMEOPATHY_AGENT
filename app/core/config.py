@@ -24,8 +24,8 @@ class Settings(BaseModel):
     
     # SQLite High-Concurrency WAL Engine Configuration
     DATABASE_PATH: Path = BASE_DIR / "data" / "homeopathy_hospital.db"
-    SQLITE_TIMEOUT_SECONDS: float = 10.0
-    SQLITE_BUSY_TIMEOUT_MS: int = 10000
+    SQLITE_TIMEOUT_SECONDS: float = 30.0
+    SQLITE_BUSY_TIMEOUT_MS: int = 30000
     SQLITE_WAL_SYNCHRONOUS: str = "NORMAL"
     
     # Asynchronous Commit Outbox Worker

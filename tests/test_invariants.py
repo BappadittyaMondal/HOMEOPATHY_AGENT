@@ -73,6 +73,12 @@ from app.clinical.master_verifier import (
     MasterClinicalPipeline,
     MasterHardenedClinicalResult
 )
+from app.clinical.acute_intercurrent import (
+    AcuteIntercurrentEngine,
+    RubricCategory,
+    RubricItem,
+    AcuteChronicContaminationException
+)
 from app.governance.tele_homoeopathy import DPDPPatientConsent
 from app.models.vitality import PatientVitalityAssessment, ConstitutionTemperamentEnum
 from app.clinical.longitudinal_ehr import LongitudinalEHREngine
@@ -438,7 +444,23 @@ def test_inv_17_oncological_pre_malignancy_biopsy_lockout():
 
 
 # -----------------------------------------------------------------------------
-# Master End-to-End Hardened Workflow Integration (All 16 Invariants Passing)
+# INV-18: Acute-on-Chronic Case Segregation State Machine
+# -----------------------------------------------------------------------------
+def test_inv_18_acute_chronic_contamination_lockout():
+    """INV-18: Mixing acute intercurrent/trauma rubrics into chronic totality raises AcuteChronicContaminationException."""
+    engine = AcuteIntercurrentEngine()
+    mixed = [
+        RubricItem(rubric_id="CHRONIC_PSORA", description="Chronic skin itching", category=RubricCategory.CHRONIC_CONSTITUTIONAL),
+        RubricItem(rubric_id="ACUTE_TRAUMA", description="Concussion from vehicle crash", category=RubricCategory.ACUTE_TRAUMA),
+    ]
+    with pytest.raises(AcuteChronicContaminationException) as exc_info:
+        engine.register_chronic_case("PT-INV18-01", mixed)
+    assert "INV-18" in str(exc_info.value)
+    assert "ACUTE_TRAUMA" in exc_info.value.contaminated_rubrics[0]
+
+
+# -----------------------------------------------------------------------------
+# Master End-to-End Hardened Workflow Integration (All 18 Invariants Passing)
 # -----------------------------------------------------------------------------
 def test_full_master_hardened_workflow_lifecycle():
     """
