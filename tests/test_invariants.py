@@ -88,6 +88,17 @@ from app.clinical.interactive_case_taking import (
     DialogueSession,
     DialogueState
 )
+from app.clinical.vitality_mandate import (
+    ExplicitVitalityMandateEngine,
+    VitalityUnassessedException,
+    KentObservation1HazardException
+)
+from app.clinical.vitals_gate import (
+    ObjectivePhysiologicalVitals,
+    ObjectiveVitalsGateEngine,
+    MissingVitalsException,
+    CriticalVitalsDecompensationException
+)
 
 
 
@@ -509,12 +520,80 @@ def test_inv_19_emergency_priority_during_interactive_dialogue():
 
 
 # -----------------------------------------------------------------------------
-# Master End-to-End Hardened Workflow Integration (All 19 Invariants Passing)
+# INV-20: Explicit Vitality Mandate & Low-Reserve Hazard Test
+# -----------------------------------------------------------------------------
+def test_inv_20_vitality_mandate_and_kent_observation_1_hazard():
+    """
+    Validates INV-20:
+    1. Chronic constitutional prescribing without explicit vitality scoring raises VitalityUnassessedException.
+    2. Patient with low vitality (V <= 3.5) and deep organic pathology (depth >= 3) cannot receive high centesimals.
+    """
+    # 1. Mandate violation raises VitalityUnassessedException
+    with pytest.raises(VitalityUnassessedException) as exc_info:
+        ExplicitVitalityMandateEngine.validate_chronic_vitality(
+            vitality_assessment=None,
+            is_acute=False,
+            patient_id="PT-INV20-CHRONIC"
+        )
+    assert "VITALITY ASSESSMENT MANDATE (INV-20)" in str(exc_info.value)
+
+    # 2. Kent Observation 1 hazard
+    depleted = PatientVitalityAssessment(
+        susceptibility_score=2.0,
+        vital_force_score=2.5,
+        pathological_depth=4,
+        temperament=ConstitutionTemperamentEnum.DEBILITATED_EXHAUSTED,
+        posology_scaling_factor=1.0,
+        clinical_recommendation="Depleted reserve"
+    )
+    with pytest.raises(KentObservation1HazardException) as exc_k:
+        ExplicitVitalityMandateEngine.verify_potency_reserve_safety(depleted, "10M")
+    assert "KENT OBSERVATION 1 COLLAPSE HAZARD" in str(exc_k.value)
+
+
+# -----------------------------------------------------------------------------
+# INV-21: Objective Physiological Vitals Gate Test
+# -----------------------------------------------------------------------------
+def test_inv_21_objective_vitals_gate_and_acute_missing_vitals():
+    """
+    Validates INV-21:
+    1. Acute consultation without verified objective vitals raises MissingVitalsException.
+    2. Vitals indicating physiological shock or severe hypoxemia trigger CriticalVitalsDecompensationException.
+    """
+    # 1. Missing vitals in acute case
+    with pytest.raises(MissingVitalsException) as exc_info:
+        ObjectiveVitalsGateEngine.evaluate_vitals(
+            vitals=None,
+            is_acute=True,
+            patient_id="PT-INV21-ACUTE"
+        )
+    assert "OBJECTIVE VITALS GATE MANDATE (INV-21)" in str(exc_info.value)
+
+    # 2. Severe hypoxia trigger
+    hypoxic_vitals = ObjectivePhysiologicalVitals(
+        pulse_bpm=110,
+        systolic_bp=100,
+        diastolic_bp=65,
+        respiratory_rate=28,
+        temperature_celsius=38.5,
+        spo2_percent=86
+    )
+    with pytest.raises(CriticalVitalsDecompensationException) as exc_dec:
+        ObjectiveVitalsGateEngine.evaluate_vitals(
+            vitals=hypoxic_vitals,
+            is_acute=True,
+            patient_id="PT-INV21-HYPOXIC"
+        )
+    assert "CRITICAL CARE DECOMPENSATION LOCKOUT" in str(exc_dec.value)
+
+
+# -----------------------------------------------------------------------------
+# Master End-to-End Hardened Workflow Integration (All 21 Invariants Passing)
 # -----------------------------------------------------------------------------
 def test_full_master_hardened_workflow_lifecycle():
     """
     Demonstrates successful execution of execute_hardened_clinical_workflow
-    verifying all 16 negative invariants concurrently.
+    verifying all 21 negative invariants concurrently.
     """
     rmp = RMPCredentials(
         rmp_name="Dr. Bappaditya Roy, MD (Hom)",
@@ -538,6 +617,15 @@ def test_full_master_hardened_workflow_lifecycle():
         posology_scaling_factor=26.25,
         clinical_recommendation="High vitality"
     )
+    vitals = ObjectivePhysiologicalVitals(
+        pulse_bpm=74,
+        systolic_bp=122,
+        diastolic_bp=78,
+        respiratory_rate=16,
+        temperature_celsius=37.0,
+        spo2_percent=99,
+        blood_glucose_mg_dl=104.0
+    )
 
     result = MasterClinicalPipeline.execute_hardened_clinical_workflow(
         patient_id="PT-HARDENED-01",
@@ -552,6 +640,9 @@ def test_full_master_hardened_workflow_lifecycle():
         symptom_weights=[5.0, 4.0, 3.5],
         is_mental_flags=[True, False, False],
         vitality_assessment=vitality,
+        objective_vitals=vitals,
+        enforce_vitality_mandate=True,
+        mandate_vitals_gate=True,
         stock_bottle_id="BTL-INV-SULPH-01",
         physical_bottle_remedy="Sulphur",
         physical_bottle_potency="30C"
@@ -564,5 +655,7 @@ def test_full_master_hardened_workflow_lifecycle():
     assert result.approved_draft is not None
     assert result.signed_prescription is not None
     assert result.dispense_receipt is not None
-    assert len(result.invariants_verified) >= 9
+    assert len(result.invariants_verified) >= 11
+    assert "INV-20: Explicit Vitality Assessment Mandate Cleared" in result.invariants_verified
+    assert "INV-21: Objective Physiological Vitals Gate Cleared" in result.invariants_verified
     assert result.system_status_banner == SYSTEM_STATUS_BANNER

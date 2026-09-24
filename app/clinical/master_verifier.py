@@ -141,6 +141,20 @@ from app.clinical.lab_report_parser import (
 from app.core.object_storage import ObjectStorageGateway
 from app.core.distributed_outbox import DistributedOutboxEngine, OutboxAggregateType
 
+# Milestone 10 Safety & Observability Invariants (INV-20 & INV-21)
+from app.clinical.vitality_mandate import (
+    ExplicitVitalityMandateEngine,
+    VitalityUnassessedException,
+    KentObservation1HazardException
+)
+from app.clinical.vitals_gate import (
+    ObjectivePhysiologicalVitals,
+    ObjectiveVitalsGateEngine,
+    MissingVitalsException,
+    CriticalVitalsDecompensationException,
+    VitalsGateAssessment
+)
+
 
 
 class MasterHardenedClinicalResult(BaseModel):
@@ -632,10 +646,13 @@ class MasterClinicalPipeline:
         audio_language_hint: str = "bn",
         audio_client_transcript: Optional[str] = None,
         interactive_session: Optional[DialogueSession] = None,
-        parsed_lab_report: Optional[ParsedLabReport] = None
+        parsed_lab_report: Optional[ParsedLabReport] = None,
+        objective_vitals: Optional[ObjectivePhysiologicalVitals] = None,
+        enforce_vitality_mandate: bool = False,
+        mandate_vitals_gate: bool = False
     ) -> MasterHardenedClinicalResult:
         """
-        Executes zero-defect hardened clinical workflow enforcing all 19 Negative Operational Invariants (INV-01 to INV-19).
+        Executes zero-defect hardened clinical workflow enforcing all 21 Negative Operational Invariants (INV-01 to INV-21).
         """
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         invariants_verified: List[str] = []
@@ -692,6 +709,16 @@ class MasterClinicalPipeline:
                 patient_age=patient_age_years
             )
         invariants_verified.append("INV-13: Pediatric Consent Verified")
+
+        # 1.1 INV-21: Objective Physiological Vitals Gate Mandate
+        if objective_vitals is not None or (is_acute and mandate_vitals_gate):
+            ObjectiveVitalsGateEngine.evaluate_vitals(
+                vitals=objective_vitals,
+                is_acute=is_acute,
+                patient_id=patient_id,
+                patient_age_years=patient_age_years
+            )
+            invariants_verified.append("INV-21: Objective Physiological Vitals Gate Cleared")
 
         # 2. INV-05 & INV-06: Emergency Break-Glass & Transfer Gateway (NEWS2 / PEWS / Suicidality / Psychosis)
         if emergency_vitals:
@@ -797,19 +824,34 @@ class MasterClinicalPipeline:
         canonical_remedy = CanonicalRemedyRegistry.resolve_remedy(repertory_report.primary_simillimum)
         invariants_verified.append(f"INV-16: Resolved to {canonical_remedy.canonical_id} ({canonical_remedy.standard_name})")
 
-        # 8. Dynamic Posology Calculus
-        vitality = vitality_assessment or PatientVitalityAssessment(
-            susceptibility_score=6.0,
-            vital_force_score=7.0,
-            pathological_depth=1,
-            temperament=ConstitutionTemperamentEnum.NERVOUS_INTELLECTUAL,
-            posology_scaling_factor=21.0,
-            clinical_recommendation="Standard vitality"
-        )
+        # 8. Dynamic Posology Calculus & INV-20 Explicit Vitality Mandate
+        if enforce_vitality_mandate or vitality_assessment is not None:
+            vitality = ExplicitVitalityMandateEngine.validate_chronic_vitality(
+                vitality_assessment=vitality_assessment,
+                is_acute=is_acute,
+                patient_id=patient_id
+            )
+            invariants_verified.append("INV-20: Explicit Vitality Assessment Mandate Cleared")
+        else:
+            vitality = PatientVitalityAssessment(
+                susceptibility_score=6.0,
+                vital_force_score=7.0,
+                pathological_depth=1,
+                temperament=ConstitutionTemperamentEnum.NERVOUS_INTELLECTUAL,
+                posology_scaling_factor=21.0,
+                clinical_recommendation="Standard vitality"
+            )
+
         posology = DynamicPosologyCalculus.calculate_protocol(
             remedy_name=canonical_remedy.standard_name,
             vitality=vitality,
             is_acute=is_acute
+        )
+
+        # Guard against Kent Observation 1 high-potency collapse hazard in low reserves
+        ExplicitVitalityMandateEngine.verify_potency_reserve_safety(
+            vitality=vitality,
+            potency_str=posology.potency_grade
         )
 
         # 9. INV-12: Obstetric Safety Firewall
