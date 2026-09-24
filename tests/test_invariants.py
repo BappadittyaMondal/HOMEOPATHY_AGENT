@@ -83,6 +83,12 @@ from app.governance.tele_homoeopathy import DPDPPatientConsent
 from app.models.vitality import PatientVitalityAssessment, ConstitutionTemperamentEnum
 from app.clinical.longitudinal_ehr import LongitudinalEHREngine
 from app.governance.nabh_audit import NABHAuditLedger
+from app.clinical.interactive_case_taking import (
+    InteractiveCaseTakingEngine,
+    DialogueSession,
+    DialogueState
+)
+
 
 
 @pytest.fixture(autouse=True)
@@ -460,7 +466,50 @@ def test_inv_18_acute_chronic_contamination_lockout():
 
 
 # -----------------------------------------------------------------------------
-# Master End-to-End Hardened Workflow Integration (All 18 Invariants Passing)
+# INV-19: Emergency Priority During Interactive Dialogue
+# -----------------------------------------------------------------------------
+def test_inv_19_emergency_priority_during_interactive_dialogue():
+    """INV-19: Emergency red flag detected in interactive case taking immediately halts prescribing and issues transfer dossier."""
+    session = InteractiveCaseTakingEngine.initialize_session(
+        patient_id="PT-INV19-01",
+        initial_narrative="crushing chest pain radiating to left arm",
+        language="en"
+    )
+    assert session.state == DialogueState.EMERGENCY_HALTED
+
+    rmp = RMPCredentials(
+        rmp_name="Dr. Bappaditya Roy, MD (Hom)",
+        registration_number="WBHC-19842",
+        state_council="WBHC",
+        is_active_practitioner=True
+    )
+    consent = DPDPPatientConsent(
+        consent_id="CNS-INV19-01",
+        patient_id="PT-INV19-01",
+        consultation_mode="TELEMEDICINE",
+        consent_timestamp="2026-09-24T12:00:00Z",
+        has_agreed_to_telemedicine_limitations=True,
+        right_to_withdraw_acknowledged=True
+    )
+
+    result = MasterClinicalPipeline.execute_hardened_clinical_workflow(
+        patient_id="PT-INV19-01",
+        tenant_id="HOSPITAL-CENTRAL-DELHI",
+        rmp_credentials=rmp,
+        dpdp_consent=consent,
+        patient_age_years=55,
+        interactive_session=session
+    )
+
+    assert result.is_workflow_successful is False
+    assert result.is_emergency_lockout is True
+    assert result.transfer_dossier is not None
+    assert result.transfer_dossier.severity_code == "CODE_RED_CRITICAL"
+    assert "INV-19" in result.invariants_verified[0]
+
+
+# -----------------------------------------------------------------------------
+# Master End-to-End Hardened Workflow Integration (All 19 Invariants Passing)
 # -----------------------------------------------------------------------------
 def test_full_master_hardened_workflow_lifecycle():
     """

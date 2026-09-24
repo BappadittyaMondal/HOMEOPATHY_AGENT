@@ -239,3 +239,38 @@ class TransferDossierGenerator:
         )
         dossier.sha256_integrity_hash = dossier.compute_hash()
         return dossier
+
+    @classmethod
+    def from_interactive_emergency(
+        cls,
+        patient_id: str,
+        reason: str,
+        age: Optional[int] = None,
+        gender: Optional[str] = "UNKNOWN"
+    ) -> EmergencyTransferDossier:
+        """Creates dossier when interactive dialogue detects acute crisis or psychiatric red flag (INV-19)."""
+        now_str = datetime.now(timezone.utc).isoformat()
+        dossier_id = f"DOS-INV19-{patient_id}-{int(datetime.now(timezone.utc).timestamp())}"
+
+        dossier = EmergencyTransferDossier(
+            dossier_id=dossier_id,
+            patient_id=patient_id,
+            patient_age=age,
+            patient_gender=gender,
+            created_at_utc=now_str,
+            emergency_category="PHYSIOLOGICAL_COLLAPSE",
+            severity_code="CODE_RED_CRITICAL",
+            primary_diagnosis_summary=f"Emergency Red Flag Detected during Interactive Case Taking: {reason}",
+            icd10_code="R68.89 / Z91.5",
+            triggering_findings=[f"INV-19 Emergency Sentinel Triggered: {reason}"],
+            immediate_stabilization_instructions=[
+                "Immediately halt outpatient dialogue questioning",
+                "Ensure patient physical airway, breathing, circulation safety",
+                "Dispatch emergency psychiatric / acute medical ambulance transfer"
+            ],
+            recommended_destination_facility_tier="Tertiary Emergency Medical / Psychiatric Crisis Stabilization Unit"
+        )
+        dossier.sha256_integrity_hash = dossier.compute_hash()
+        return dossier
+
+

@@ -124,6 +124,24 @@ from app.dispensary.stock_ledger import (
 )
 from app.models.vitality import ConstitutionTemperamentEnum
 
+# Milestone 9 Multimodal & Interactive Intelligence
+from app.governance.audio_ingestion import (
+    VernacularAudioDecoderEngine,
+    AudioIngestionResult
+)
+from app.clinical.interactive_case_taking import (
+    InteractiveCaseTakingEngine,
+    DialogueSession,
+    DialogueState
+)
+from app.clinical.lab_report_parser import (
+    LabReportParserEngine,
+    ParsedLabReport
+)
+from app.core.object_storage import ObjectStorageGateway
+from app.core.distributed_outbox import DistributedOutboxEngine, OutboxAggregateType
+
+
 
 class MasterHardenedClinicalResult(BaseModel):
     """Encapsulates hardened Milestone 6 workflow execution with 16 invariant audit trail."""
@@ -609,13 +627,63 @@ class MasterClinicalPipeline:
         has_psychiatrist_cosign: bool = False,
         acute_rubrics: Optional[List[RubricItem]] = None,
         is_acute_intercurrent: bool = False,
-        acute_engine: Optional[AcuteIntercurrentEngine] = None
+        acute_engine: Optional[AcuteIntercurrentEngine] = None,
+        audio_payload: Optional[bytes] = None,
+        audio_language_hint: str = "bn",
+        audio_client_transcript: Optional[str] = None,
+        interactive_session: Optional[DialogueSession] = None,
+        parsed_lab_report: Optional[ParsedLabReport] = None
     ) -> MasterHardenedClinicalResult:
         """
-        Executes zero-defect hardened clinical workflow enforcing all 18 Negative Operational Invariants (INV-01 to INV-18).
+        Executes zero-defect hardened clinical workflow enforcing all 19 Negative Operational Invariants (INV-01 to INV-19).
         """
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         invariants_verified: List[str] = []
+
+        # 0. INV-19: Emergency Priority During Interactive Dialogue & Multimodal Screening
+        if interactive_session:
+            if interactive_session.state == DialogueState.EMERGENCY_HALTED:
+                audit_log = NABHAuditLedger.append_log(
+                    log_id=f"AUD-INV19-{patient_id}",
+                    timestamp=now_iso,
+                    actor_id=rmp_credentials.registration_number,
+                    action_type="EMERGENCY_LOCKOUT_INTERACTIVE_DIALOGUE",
+                    patient_id=patient_id,
+                    details={
+                        "reason": interactive_session.emergency_flag or "Emergency red flag during dialogue",
+                        "invariant": "INV-19"
+                    }
+                )
+                dossier = TransferDossierGenerator.from_interactive_emergency(
+                    patient_id=patient_id,
+                    reason=interactive_session.emergency_flag or "Emergency red flag during dialogue",
+                    age=patient_age_years
+                )
+                return MasterHardenedClinicalResult(
+                    patient_id=patient_id,
+                    tenant_id=tenant_id,
+                    is_workflow_successful=False,
+                    is_emergency_lockout=True,
+                    transfer_dossier=dossier,
+                    nabh_audit_entry=audit_log,
+                    invariants_verified=["INV-19: Emergency Priority During Interactive Dialogue Enforced"],
+                    execution_timestamp=now_iso
+                )
+            elif interactive_session.state == DialogueState.ABSTAIN_INSUFFICIENT:
+                return MasterHardenedClinicalResult(
+                    patient_id=patient_id,
+                    tenant_id=tenant_id,
+                    is_workflow_successful=False,
+                    is_abstain=True,
+                    abstain_reason="INV-03: Insufficient characteristic totality following interactive clarification dialogue",
+                    invariants_verified=["INV-03: Case Totality Abstain Enforced (Organon §153)"],
+                    execution_timestamp=now_iso
+                )
+            invariants_verified.append("INV-19: Interactive Dialogue Emergency Screening Cleared")
+
+        if parsed_lab_report and parsed_lab_report.has_panic_values:
+            panel = LabReportParserEngine.convert_to_gateway_panel(parsed_lab_report)
+            LaboratoryPanicGateway.evaluate_lab_panel(panel, raise_on_panic=True)
 
         # 1. INV-13: Pediatric Consent Mandate
         if patient_age_years < 18 and not has_guardian_consent:
